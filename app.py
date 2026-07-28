@@ -10,9 +10,8 @@ import streamlit as st
 # =============================================================================
 WEBHOOK_URL = st.secrets["WEBHOOK_URL"]
 
-AI_API_KEYS = [
-    st.secrets["AI_API_KEY"]
-]
+AI_API_KEYS = list(st.secrets["AI_API_KEYS"])
+
 
 AI_SYSTEM_PROMPT = (
     "Ты — ведущий эксперт по истории России, искусствовед и составитель заданий ЕГЭ. "
