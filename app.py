@@ -17,7 +17,8 @@ AI_API_KEYS = [
 
 AI_SYSTEM_PROMPT = (
     "Ты — ведущий эксперт по истории России, искусствовед и составитель заданий ЕГЭ. "
-    "Проанализируй присланное изображение и верни ТОЛЬКО его общепринятое точное историческое название "
+    "Проанализируй присланное изображение (плакат, монета, марка, картина, скульптура) "
+    "и верни ТОЛЬКО его общепринятое точное историческое название "
     "(например: 'Церковь Покрова на Нерли', 'Боярыня Морозова', 'Плакат «Родина-мать зовет!»', 'Медный всадник'). "
     "Отвечай СТРОГО только одним названием без вводных слов, точек на конце и внешних кавычек."
 )
@@ -33,19 +34,29 @@ st.write(
 
 
 # =============================================================================
-# ФУНКЦИИ ОБРАБОТКИ
+# ФУНКЦИИ ОБРАБОТКИ С ВЫВОДОМ ОШИБОК GOOGLE
 # =============================================================================
-def get_ai_title(file_bytes: bytes, mime_type: str) -> str:
-    """Обращается к Gemini API с ротацией ключей и фоллбэком."""
+def get_ai_title(file_bytes: bytes, mime_type: str) -> tuple[str, str]:
+    """Обращается к Gemini API и возвращает имя ИЛИ прозрачную ошибку от Google."""
     base64_data = base64.b64encode(file_bytes).decode("utf-8")
 
+    clean_mime = (
+        mime_type
+        if mime_type in ["image/jpeg", "image/png", "image/webp"]
+        else "image/jpeg"
+    )
+
     payload = {
-        "system_instruction": {"parts": [{"text": AI_SYSTEM_PROMPT}]},
         "contents": [
             {
                 "parts": [
-                    {"text": "Назови исторический объект на изображении:"},
-                    {"inlineData": {"mimeType": mime_type, "data": base64_data}},
+                    {
+                        "text": (
+                            f"{AI_SYSTEM_PROMPT}\n\nНазови точное историческое название"
+                            " этого объекта:"
+                        )
+                    },
+                    {"inlineData": {"mimeType": clean_mime, "data": base64_data}},
                 ]
             }
         ],
@@ -56,23 +67,44 @@ def get_ai_title(file_bytes: bytes, mime_type: str) -> str:
     shuffled_keys = AI_API_KEYS.copy()
     random.shuffle(shuffled_keys)
 
+    last_error = ""
+
     for api_key in shuffled_keys:
         for model in models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
             try:
-                response = requests.post(url, json=payload, timeout=20)
+                response = requests.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=25,
+                )
                 if response.status_code == 200:
                     res_json = response.json()
                     candidates = res_json.get("candidates", [])
                     if candidates:
-                        text = candidates[0]["content"]["parts"][0]["text"]
-                        clean_title = text.strip().strip('"').strip("'")
-                        if clean_title:
-                            return clean_title
-            except Exception:
+                        parts = (
+                            candidates[0]
+                            .get("content", {})
+                            .get("parts", [])
+                        )
+                        if parts:
+                            text = parts[0].get("text", "")
+                            clean_title = (
+                                text.strip()
+                                .strip('"')
+                                .strip("'")
+                                .strip("`")
+                            )
+                            if clean_title:
+                                return clean_title, "✅ Распознано ИИ"
+                else:
+                    last_error = f"HTTP {response.status_code}: {response.text[:150]}"
+            except Exception as e:
+                last_error = f"Сетевая ошибка: {str(e)}"
                 continue
 
-    return ""
+    return "", f"⚠️ Ошибка Gemini ({last_error if last_error else 'Нет ответа'})"
 
 
 def upload_single_file(
@@ -170,39 +202,37 @@ if st.session_state["items_data"]:
     )
     pending_count = total_count - ai_done_count
 
-    # Крупные метрики над блоком
     col_m1, col_m2, col_m3 = st.columns(3)
     col_m1.metric("📊 Всего картинок", total_count)
     col_m2.metric("✅ Распознано ИИ", f"{ai_done_count} из {total_count}")
     col_m3.metric("⏳ Ожидает распознавания", pending_count)
 
-    # Контейнеры под живой прогресс ИИ
     ai_status_box = st.empty()
     ai_progress_box = st.empty()
 
     if pending_count > 0:
         if st.button("🤖 1. Распознать названия с помощью ИИ", type="secondary"):
             progress_bar = ai_progress_box.progress(0)
-            
+
             def process_ai(item):
                 if not item["ai_title"]:
-                    item["status"] = "🔄 ИИ обрабатывает..."
-                    title = get_ai_title(item["bytes"], item["mime_type"])
+                    title, status_str = get_ai_title(
+                        item["bytes"], item["mime_type"]
+                    )
                     if title:
                         item["ai_title"] = title
-                        item["status"] = "✅ Распознано ИИ"
+                        item["status"] = status_str
                     else:
                         item["ai_title"] = item["base_name"]
-                        item["status"] = "⚠️ Имя по умолчанию"
+                        item["status"] = status_str
 
-                    # Прямое обновление текстового поля в интерфейсе
                     widget_key = f"input_{item['id']}_{item['original_name']}"
                     st.session_state[widget_key] = item["ai_title"]
                 return item
 
             completed = 0
-            # 3 потока для ИИ
-            with ThreadPoolExecutor(max_workers=3) as executor:
+            # 1 поток для поштучной отладки
+            with ThreadPoolExecutor(max_workers=1) as executor:
                 futures = [
                     executor.submit(process_ai, item)
                     for item in st.session_state["items_data"]
@@ -212,25 +242,25 @@ if st.session_state["items_data"]:
                     completed += 1
                     percent = int((completed / total_count) * 100)
                     ai_status_box.info(
-                        f"🧠 ИИ обработал: **{completed} из {total_count}** картинок ({percent}%)"
+                        f"🧠 ИИ обработал: **{completed} из {total_count}**"
+                        f" картинок ({percent}%)"
                     )
                     progress_bar.progress(completed / total_count)
 
-            # Автоматическая пронумеровка совпадающих имен
+            # Автоматическая уникализация
             title_counts = {}
             for item in st.session_state["items_data"]:
                 t = item["ai_title"]
                 if t in title_counts:
                     title_counts[t] += 1
                     item["ai_title"] = f"{t}_{title_counts[t]}"
-                    item["status"] = "⚠️ Дубликат (переименовано)"
                 else:
                     title_counts[t] = 1
 
                 widget_key = f"input_{item['id']}_{item['original_name']}"
                 st.session_state[widget_key] = item["ai_title"]
 
-            ai_status_box.success("🎉 ИИ завершил поштучную обработку! Все названия обновлены ниже.")
+            ai_status_box.success("🎉 Обработка завершена!")
             st.rerun()
 
     # =========================================================================
@@ -257,7 +287,9 @@ if st.session_state["items_data"]:
 
         with col:
             with st.container(border=True):
-                st.caption(f"Файл: `{item['original_name']}` | Статус: **{item['status']}**")
+                st.caption(
+                    f"Файл: `{item['original_name']}` | Статус: **{item['status']}**"
+                )
                 st.image(item["bytes"], use_column_width=True)
 
                 edited_title = st.text_input(
@@ -322,11 +354,15 @@ if st.session_state["items_data"]:
                     completed += 1
                     percent = int((completed / total) * 100)
                     drive_status_box.info(
-                        f"📤 Отправка в Google: **{completed} из {total}** файлов ({percent}%)"
+                        f"📤 Отправка в Google: **{completed} из {total}**"
+                        f" файлов ({percent}%)"
                     )
                     progress_bar_drive.progress(completed / total)
 
-            drive_status_box.success("🎉 Все выбранные файлы успешно отправлены и сохранены на Google Диск!")
+            drive_status_box.success(
+                "🎉 Все выбранные файлы успешно отправлены и сохранены на Google"
+                " Диск!"
+            )
             st.dataframe(results, use_container_width=True)
 else:
     st.info("👆 Загрузите файлы в блоке выше, чтобы начать работу.")
