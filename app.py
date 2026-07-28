@@ -52,7 +52,7 @@ def get_ai_title(file_bytes: bytes, mime_type: str) -> str:
         "generationConfig": {"temperature": 0.1},
     }
 
-    models = ["gemini-3.5-flash-lite"]
+    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
     shuffled_keys = AI_API_KEYS.copy()
     random.shuffle(shuffled_keys)
 
@@ -136,7 +136,7 @@ replace_existing = st.checkbox(
     value=True,
 )
 
-# Запись загруженных файлов в состояние
+# Запись новых файлов в состояние
 if uploaded_files:
     current_filenames = [
         item["original_name"] for item in st.session_state["items_data"]
@@ -144,9 +144,10 @@ if uploaded_files:
     for file in uploaded_files:
         if file.name not in current_filenames:
             base_name, ext = os.path.splitext(file.name)
+            item_id = len(st.session_state["items_data"])
             st.session_state["items_data"].append(
                 {
-                    "id": len(st.session_state["items_data"]),
+                    "id": item_id,
                     "original_name": file.name,
                     "base_name": base_name,
                     "ext": ext,
@@ -160,60 +161,80 @@ if uploaded_files:
 st.divider()
 
 # =============================================================================
-# КНОПКА 1: ИИ-РАСПОЗНАВАНИЕ
+# СЧЕТЧИКИ И ПРОГРЕСС-БАР ИИ
 # =============================================================================
 if st.session_state["items_data"]:
-    st.subheader(f"📋 Файлов к обработке: {len(st.session_state['items_data'])}")
+    total_count = len(st.session_state["items_data"])
+    ai_done_count = sum(
+        1 for item in st.session_state["items_data"] if item["ai_title"]
+    )
+    pending_count = total_count - ai_done_count
 
-    if st.button("🤖 1. Распознать названия с помощью ИИ", type="secondary"):
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        total = len(st.session_state["items_data"])
+    # Крупные метрики над блоком
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric("📊 Всего картинок", total_count)
+    col_m2.metric("✅ Распознано ИИ", f"{ai_done_count} из {total_count}")
+    col_m3.metric("⏳ Ожидает распознавания", pending_count)
 
-        def process_ai(item):
-            if not item["ai_title"]:
-                item["status"] = "🔄 ИИ обрабатывает..."
-                title = get_ai_title(item["bytes"], item["mime_type"])
-                if title:
-                    item["ai_title"] = title
-                    item["status"] = "✅ Распознано ИИ"
+    # Контейнеры под живой прогресс ИИ
+    ai_status_box = st.empty()
+    ai_progress_box = st.empty()
+
+    if pending_count > 0:
+        if st.button("🤖 1. Распознать названия с помощью ИИ", type="secondary"):
+            progress_bar = ai_progress_box.progress(0)
+            
+            def process_ai(item):
+                if not item["ai_title"]:
+                    item["status"] = "🔄 ИИ обрабатывает..."
+                    title = get_ai_title(item["bytes"], item["mime_type"])
+                    if title:
+                        item["ai_title"] = title
+                        item["status"] = "✅ Распознано ИИ"
+                    else:
+                        item["ai_title"] = item["base_name"]
+                        item["status"] = "⚠️ Имя по умолчанию"
+
+                    # Прямое обновление текстового поля в интерфейсе
+                    widget_key = f"input_{item['id']}_{item['original_name']}"
+                    st.session_state[widget_key] = item["ai_title"]
+                return item
+
+            completed = 0
+            # 3 потока для ИИ
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = [
+                    executor.submit(process_ai, item)
+                    for item in st.session_state["items_data"]
+                ]
+                for future in as_completed(futures):
+                    future.result()
+                    completed += 1
+                    percent = int((completed / total_count) * 100)
+                    ai_status_box.info(
+                        f"🧠 ИИ обработал: **{completed} из {total_count}** картинок ({percent}%)"
+                    )
+                    progress_bar.progress(completed / total_count)
+
+            # Автоматическая пронумеровка совпадающих имен
+            title_counts = {}
+            for item in st.session_state["items_data"]:
+                t = item["ai_title"]
+                if t in title_counts:
+                    title_counts[t] += 1
+                    item["ai_title"] = f"{t}_{title_counts[t]}"
+                    item["status"] = "⚠️ Дубликат (переименовано)"
                 else:
-                    item["ai_title"] = item["base_name"]
-                    item["status"] = "⚠️ Имя по умолчанию"
-            return item
+                    title_counts[t] = 1
 
-        completed = 0
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = [
-                executor.submit(process_ai, item)
-                for item in st.session_state["items_data"]
-            ]
-            for future in as_completed(futures):
-                future.result()
-                completed += 1
-                status_text.text(
-                    f"ИИ распознает: {completed} из {total} картинок..."
-                )
-                progress_bar.progress(completed / total)
+                widget_key = f"input_{item['id']}_{item['original_name']}"
+                st.session_state[widget_key] = item["ai_title"]
 
-        # Автоматическая уникализация совпадающих названий (например: Аленушка_2)
-        title_counts = {}
-        for item in st.session_state["items_data"]:
-            t = item["ai_title"]
-            if t in title_counts:
-                title_counts[t] += 1
-                item["ai_title"] = f"{t}_{title_counts[t]}"
-                item["status"] = "⚠️ Дубликат (переименовано)"
-            else:
-                title_counts[t] = 1
-
-        status_text.empty()
-        progress_bar.empty()
-        st.success("🎉 ИИ завершил обработку! Все дубликаты пронумерованы.")
-        st.rerun()
+            ai_status_box.success("🎉 ИИ завершил поштучную обработку! Все названия обновлены ниже.")
+            st.rerun()
 
     # =========================================================================
-    # 2. ПРЕДПРОСМОТР, ПРОВЕРКА И РЕДАКТИРОВАНИЕ
+    # ПРЕДПРОСМОТР, ПРОВЕРКА И РЕДАКТИРОВАНИЕ
     # =========================================================================
     st.subheader("👁️ Проверка и редактирование названий")
     st.info(
@@ -227,27 +248,25 @@ if st.session_state["items_data"]:
     cols = st.columns(3)
     for idx, item in enumerate(st.session_state["items_data"]):
         col = cols[idx % 3]
+        widget_key = f"input_{item['id']}_{item['original_name']}"
+
+        if widget_key not in st.session_state:
+            st.session_state[widget_key] = (
+                item["ai_title"] if item["ai_title"] else item["base_name"]
+            )
+
         with col:
             with st.container(border=True):
-                # Статус-бейдж
                 st.caption(f"Файл: `{item['original_name']}` | Статус: **{item['status']}**")
-                st.image(
-                    item["bytes"], use_column_width=True
-                )
+                st.image(item["bytes"], use_column_width=True)
 
-                default_title = (
-                    item["ai_title"] if item["ai_title"] else item["base_name"]
-                )
-                
                 edited_title = st.text_input(
                     f"Название #{idx+1}:",
-                    value=default_title,
-                    key=f"input_{item['id']}_{item['original_name']}",
+                    key=widget_key,
                 )
 
-                # Проверка на совпадение в реальном времени
                 if edited_title.strip() in entered_titles:
-                    st.warning("⚠️ Такое название уже есть выше! Уточните его, чтобы не перезаписать файл.")
+                    st.warning("⚠️ Такое название уже есть выше!")
                 else:
                     entered_titles.append(edited_title.strip())
 
@@ -270,15 +289,16 @@ if st.session_state["items_data"]:
     st.divider()
 
     # =========================================================================
-    # КНОПКА 2: МАССОВАЯ ЗАГРУЗКА НА ВЕБХУК
+    # КНОПКА 2: МАССОВАЯ ЗАГРУЗКА НА ВЕБХУК В GOOGLE
     # =========================================================================
     if final_upload_list:
         if st.button(
             f"🚀 2. Загрузить выбранные ({len(final_upload_list)} шт.) в Google Диск и Таблицу",
             type="primary",
         ):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            drive_status_box = st.empty()
+            drive_progress_box = st.empty()
+            progress_bar_drive = drive_progress_box.progress(0)
 
             results = []
             completed = 0
@@ -300,14 +320,13 @@ if st.session_state["items_data"]:
                     res = future.result()
                     results.append(res)
                     completed += 1
-                    status_text.text(
-                        f"Отправка в Google: {completed} из {total}..."
+                    percent = int((completed / total) * 100)
+                    drive_status_box.info(
+                        f"📤 Отправка в Google: **{completed} из {total}** файлов ({percent}%)"
                     )
-                    progress_bar.progress(completed / total)
+                    progress_bar_drive.progress(completed / total)
 
-            status_text.empty()
-            progress_bar.empty()
-            st.success("🎉 Все файлы успешно отправлены и сохранены!")
+            drive_status_box.success("🎉 Все выбранные файлы успешно отправлены и сохранены на Google Диск!")
             st.dataframe(results, use_container_width=True)
 else:
     st.info("👆 Загрузите файлы в блоке выше, чтобы начать работу.")
