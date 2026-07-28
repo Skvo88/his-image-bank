@@ -11,8 +11,7 @@ import streamlit as st
 WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbydDX0UgH_Bx_C7ZEE2fpEa_JM30nVIfl9Mum6rytzEtXFm5VoNfBnQo0RoeZGVucs3jg/exec"
 
 AI_API_KEYS = [
-    "AIzaSyDuvBCO2Dklp9zppJsIdmXD8meWxDYO9go",
-    "AIzaSyCX9ESLn_jM4gOgSHzfmaYXc6Zz1eXQGbg",
+    st.secrets["AI_API_KEY"]
 ]
 
 AI_SYSTEM_PROMPT = (
