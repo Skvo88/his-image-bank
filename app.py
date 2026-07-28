@@ -52,7 +52,7 @@ def get_ai_title(file_bytes: bytes, mime_type: str) -> str:
         "generationConfig": {"temperature": 0.1},
     }
 
-    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    models = ["gemini-3.5-flash-lite"]
     shuffled_keys = AI_API_KEYS.copy()
     random.shuffle(shuffled_keys)
 
