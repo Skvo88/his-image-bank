@@ -8,7 +8,7 @@ import streamlit as st
 # =============================================================================
 # НАСТРОЙКИ И КОНФИГУРАЦИЯ
 # =============================================================================
-WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbydDX0UgH_Bx_C7ZEE2fpEa_JM30nVIfl9Mum6rytzEtXFm5VoNfBnQo0RoeZGVucs3jg/exec"
+WEBHOOK_URL = st.secrets["WEBHOOK_URL"]
 
 AI_API_KEYS = [
     st.secrets["AI_API_KEY"]
